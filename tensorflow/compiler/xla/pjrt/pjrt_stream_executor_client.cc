@@ -130,6 +130,10 @@ limitations under the License.
 // Added by Alpa
 #include "tensorflow/compiler/xla/service/pass_context.h"
 
+// Added by [yg]
+#include <iostream>
+#include <fstream>
+
 namespace xla {
 
 PjRtPlatformId PjRtStreamExecutorDevice::platform_id() const {
@@ -1648,6 +1652,22 @@ Status CheckCompatibleShapes(bool strict_shape_checking,
                              const TransferManager& transfer_manager,
                              int parameter_index) {
   // TODO(misard) Support casting of tuple parameters.
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+
+  fout << InvalidArgument(
+          "Executable expected shape %s for argument %d but got "
+          "incompatible "
+          "shape %s",
+          ShapeUtil::HumanStringWithLayout(execution_shape), parameter_index,
+          ShapeUtil::HumanStringWithLayout(buffer_shape)) << std::endl;
+  fout << InvalidArgument(
+          "Executable expected shape %s for argument %d but got "
+          "incompatible "
+          "shape %s",
+          ShapeUtil::HumanStringWithLayout(execution_shape), parameter_index,
+          ShapeUtil::HumanStringWithLayout(buffer_shape)) << std::endl;
   if (strict_shape_checking || buffer_shape.IsTuple()) {
     if (!ShapeUtil::Equal(buffer_shape, execution_shape)) {
       return InvalidArgument(
@@ -1668,6 +1688,7 @@ Status CheckCompatibleShapes(bool strict_shape_checking,
           ShapeUtil::HumanStringWithLayout(buffer_shape));
     }
   }
+  fout.close();
   return OkStatus();
 }
 
@@ -1848,6 +1869,10 @@ PjRtStreamExecutorExecutable::MakeExecutionInputsAndWaitForEvents(
     absl::flat_hash_set<BufferSequencingEvent*>& events) const {
   std::vector<ExecutionInput> execution_inputs;
   LocalDeviceState* device_state = &(client_->device_state(device_ordinal));
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+
   TransferManager* transfer_manager =
       client_->client()->backend().transfer_manager();
   // Lift tuple_handle outside the conditional so that the event it returns is
@@ -1870,7 +1895,8 @@ PjRtStreamExecutorExecutable::MakeExecutionInputsAndWaitForEvents(
     execution_inputs.reserve(argument_handles.size());
     for (int i = 0; i < argument_handles.size(); ++i) {
       PjRtBuffer* handle = argument_handles[i];
-
+      fout << "handle->on_device_shape(): " << handle->on_device_shape() << std::endl;
+      fout<< "PjRtBuffer* handle: " << handle << std::endl;
       // Make an ExecutionInput from the device buffer.
       TF_RETURN_IF_ERROR(CheckCompatibleShapes(
           options.strict_shape_checking, handle->on_device_shape(),
@@ -1890,7 +1916,7 @@ PjRtStreamExecutorExecutable::MakeExecutionInputsAndWaitForEvents(
   for (BufferSequencingEvent* event : events) {
     event->WaitForEventOnStream(device_state->compute_stream());
   }
-
+  fout.close();
   return execution_inputs;
 }
 
@@ -1904,6 +1930,9 @@ StatusOr<ScopedShapedBuffer> PjRtStreamExecutorExecutable::EnqueueExecution(
     std::vector<PjRtStreamExecutorBuffer::ScopedHold>* device_buffers,
     std::shared_ptr<DeviceAssignment> device_assignment,
     std::vector<std::function<void()>>& compute_callbacks) const {
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
   int device_ordinal = tensorflow::down_cast<PjRtStreamExecutorDevice*>(device)
                            ->local_device_state()
                            ->device_ordinal();
@@ -1930,6 +1959,14 @@ StatusOr<ScopedShapedBuffer> PjRtStreamExecutorExecutable::EnqueueExecution(
           "device %s, but replica is assigned to device %s.",
           i, replica, handle->device()->DebugString(), device->DebugString());
     }
+    if (argument_handles[0] == argument_handles[i]){
+      fout << "argument_handles is same" << std::endl;
+    }
+
+    fout << InvalidArgument(
+          "Buffer passed to Execute() as argument %d to replica %d is on "
+          "device %s, but replica is assigned to device %s.",
+          i, replica, handle->device()->DebugString(), device->DebugString()) << std::endl;
     bool must_donate = donate_it != donated_params.end() && *donate_it == i;
     if (must_donate) {
       ++donate_it;
@@ -2119,13 +2156,25 @@ PjRtStreamExecutorExecutable::ExecuteHelper(
     const RunId& run_id, const ExecuteOptions& options, bool fill_future,
     PjRtDevice* device) const {
   const uint64_t start_time_usecs = tsl::Env::Default()->NowMicros();
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "ExecuteHelper" << std::endl;
+
   std::shared_ptr<DeviceAssignment> device_assignment;
   if (device == nullptr) {
+    fout << "if (device == nullptr)" << std::endl;
     CHECK(device_assignment_ != nullptr);
     const int device_id = (*device_assignment_)(replica, partition);
+    fout << "device_id: " << std::to_string(device_id) << std::endl;
+    fout << "PjRtStreamExecutorExecutable device_assignment:\n"
+            << device_assignment_->ToString() << std::endl;
+    // Computations: 1 Replicas: 1
+    // Computation 0: 1 ??
     TF_ASSIGN_OR_RETURN(device, client_->LookupDevice(device_id));
     device_assignment = device_assignment_;
-  } else {
+  } else { // not here
+    // fout << "if (device != nullptr)" << std::endl;
     CHECK(device_assignment_ == nullptr);
     CHECK_EQ(replica, 0);
     CHECK_EQ(partition, 0);
@@ -2213,6 +2262,9 @@ PjRtStreamExecutorExecutable::ExecuteHelper(
       });
   ReportExecutableEnqueueTime(tsl::Env::Default()->NowMicros() -
                               start_time_usecs);
+  
+  fout.close();
+
   return Result({/*future=*/std::move(future), /*buffers=*/std::move(outputs)});
 }
 
@@ -2224,6 +2276,12 @@ PjRtStreamExecutorExecutable::Execute(
   if (device_assignment_ == nullptr) {
     return InvalidArgument("Execute expects a non-null device_assignment");
   }
+
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+
+  fout << "PjRtStreamExecutorExecutable::Execute" << std::endl;
 
   RunId run_id;
   tensorflow::profiler::TraceMeProducer activity(
@@ -2244,6 +2302,12 @@ PjRtStreamExecutorExecutable::Execute(
           << "; num_replicas=" << num_replicas()
           << " num_partitions=" << num_partitions()
           << " num_addressable_devices=" << num_addressable_devices;
+  
+  fout << "Executing computation " << name()
+          << "; num_replicas=" << num_replicas()
+          << " num_partitions=" << num_partitions()
+          << " num_addressable_devices=" << num_addressable_devices  << std::endl;
+  
   std::vector<StatusOr<Result>> results(num_addressable_devices);
   if (num_addressable_devices == 1) {
     // Fast-path if there is only one device — run the computation on the
@@ -2269,7 +2333,9 @@ PjRtStreamExecutorExecutable::Execute(
         results[i] =
             ExecuteHelper(argument_handles[i], replica, partition, run_id,
                           options, returned_futures.has_value());
-
+      fout << "replica [HOST] " << std::to_string(replica) << std::endl;
+      fout << "partition [NUM_DEVICES] " << std::to_string(partition) << std::endl;
+      fout << "num_addressable_devices: " << std::to_string(num_addressable_devices) << std::endl;
         absl::MutexLock lock(&mu);
         --running;
         if (!results[i].ok()) {
@@ -2338,6 +2404,7 @@ PjRtStreamExecutorExecutable::Execute(
       returned_futures->push_back(*std::move(statusor->future));
     }
   }
+  fout.close();
   return wrapped_results;
 }
 
