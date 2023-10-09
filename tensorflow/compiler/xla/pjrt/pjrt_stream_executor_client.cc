@@ -384,32 +384,39 @@ StatusOr<std::unique_ptr<PjRtStreamExecutorBuffer>> AllocateDestinationBuffer(
   if (on_host_shape.IsTuple() && on_host_shape.tuple_shapes_size() == 0) {
     return InvalidArgument("Can't make a buffer from an empty tuple");
   }
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "[TransferManager] StatusOr<std::unique_ptr<PjRtStreamExecutorBuffer>> AllocateDestinationBuffer" << std::endl;
 
   auto* se_client = tensorflow::down_cast<PjRtStreamExecutorClient*>(client);
   TransferManager* transfer_manager =
       se_client->client()->backend().transfer_manager();
+  // device allocator is device number (int) of memory allocation. (shaped_buffer.device_ordinal());
   TF_ASSIGN_OR_RETURN(ScopedShapedBuffer dst_buffer,
                       transfer_manager->AllocateScopedShapedBuffer(
                           on_host_shape, se_client->allocator(),
                           local_device->device_ordinal()));
   if (local_device->allocation_model() ==
-      LocalDeviceState::kComputeSynchronized) {
+      LocalDeviceState::kComputeSynchronized) { // GPU
     if (copy_stream == nullptr) {
+      fout << "if copy_stream == nullptr " << std::endl;
       CHECK(is_uninitialized_create);
     } else {
-      copy_stream->ThenWaitFor(local_device->compute_stream());
+      copy_stream->ThenWaitFor(local_device->compute_stream()); //CheckError(parent_->CreateStreamDependency(this, other));
     }
-  } else {
+  } else { // CPU (kSynchronous), TPU (kAsynchronous)
     DCHECK(transfer_manager->CanShapedBufferBeAccessedNow(
         local_device->compute_stream()->parent(), dst_buffer));
   }
   Shape on_device_shape = dst_buffer.on_device_shape();
-
+  fout << "[GPU hold] dst_buffer.shape: " << dst_buffer.ToString() << std::endl;
   absl::InlinedVector<std::shared_ptr<BufferSequencingEvent>, 2>
       definition_events;
   if (is_uninitialized_create) {
     // There is not going to be any copy into the buffer so in general we don't
     // need a definition event.
+    fout << "if (is_unintialized_create) " << std::endl;
     if (local_device->allocation_model() ==
         LocalDeviceState::kComputeSynchronized) {
       // The allocation is not valid until the compute stream passes this point,
@@ -436,6 +443,7 @@ StatusOr<std::unique_ptr<PjRtStreamExecutorBuffer>> AllocateDestinationBuffer(
   }
   se::Stream* tuple_table_stream = local_device->host_to_device_stream();
   if (on_device_shape.IsTuple()) {
+    fout << "if (on_device_shape.IsTuple() " << std::endl;
     // We also need to copy the tuple tables, so we'll have an additional
     // definition event for that copy to complete.
     if (tuple_table_stream != copy_stream) {
@@ -485,7 +493,7 @@ StatusOr<std::unique_ptr<PjRtStreamExecutorBuffer>> AllocateDestinationBuffer(
                 definition_events.back(), tuple_table_stream,
                 /*prefer_to_retain_reference=*/false);
   }
-
+  fout.close();
   return py_buffer;
 }
 
@@ -581,13 +589,19 @@ void PjRtStreamExecutorBuffer::ScopedHold::AddToInput(
     const ShapeTree<MaybeOwningDeviceMemory>::iterator& end,
     ExecutionInput* execution_input,
     se::DeviceMemoryAllocator* allocator) const {
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
   CHECK(ok());
   if (type_ == kDonation) {
+    fout << "type_ == kDonation" << std::endl;
     buffer()->AddToInputAsDonated(iterator, end, execution_input, allocator);
   } else {
+    fout << "else" << std::endl;
     CHECK_EQ(type_, kUsage);
     buffer()->AddToInputAsImmutable(iterator, end);
   }
+  fout.close();
 }
 
 bool PjRtStreamExecutorBuffer::IsOnCpu() const {
@@ -595,6 +609,11 @@ bool PjRtStreamExecutorBuffer::IsOnCpu() const {
 }
 
 StatusOr<Shape> PjRtStreamExecutorBuffer::logical_on_device_shape() {
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "[TransferManager] logical_on_device_shape() " << std::endl;
+  fout.close();
   if (on_device_shape_.is_static()) {
     return on_device_shape_;
   }
@@ -698,11 +717,17 @@ PjRtStreamExecutorClient::BufferFromHostBuffer(
     std::optional<absl::Span<int64_t const>> byte_strides,
     HostBufferSemantics host_buffer_semantics,
     std::function<void()> on_done_with_host_buffer, PjRtDevice* device) {
+  
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "[TransferManager] BufferFromHostBuffer in " << std::endl;
   tsl::profiler::TraceMe traceme(
       "PjRtStreamExecutorClient::BufferFromHostBuffer");
   Shape shape = ShapeUtil::MakeShape(type, dims);
-  VLOG(1) << "PjRtStreamExecutorClient::BufferFromHostBuffer: shape: "
-          << shape.ToString() << " device: " << device->DebugString();
+  //VLOG(1)
+  fout << "PjRtStreamExecutorClient::BufferFromHostBuffer: shape: "
+          << shape.ToString() << " device: " << device->DebugString() << std::endl;
   TF_ASSIGN_OR_RETURN(LocalDeviceState * local_device,
                       tensorflow::down_cast<PjRtStreamExecutorDevice*>(device)
                           ->GetLocalDeviceState());
@@ -715,6 +740,7 @@ PjRtStreamExecutorClient::BufferFromHostBuffer(
     byte_strides = tmp_strides;
   }
   int64_t size = ShapeUtil::ByteSizeOf(shape);
+  fout << "ShapeUtil::ByteSizeof(shape): " << std::to_string(size) << std::endl;
 
   TransferManager* transfer_manager = client()->backend().transfer_manager();
   TF_ASSIGN_OR_RETURN(Shape compact_shape,
@@ -731,7 +757,8 @@ PjRtStreamExecutorClient::BufferFromHostBuffer(
   // path.
   bool is_cpu_platform =
       local_device->executor()->platform()->id() == se::host::kHostPlatformId;
-  if (is_cpu_platform) {
+  if (is_cpu_platform) { // not here
+    // fout << "is_cpu_platform" << std::endl;
     // If we are on the host platform and the input buffer is sufficiently
     // aligned, we can simply point to the input array's data without any
     // further copies. At the time of writing we require a 16-byte alignment
@@ -778,7 +805,7 @@ PjRtStreamExecutorClient::BufferFromHostBuffer(
               shape, std::move(device_buffer), this, device));
     }
   }
-
+  fout << "AllocateDestinationBuffer" <<std::endl;
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<PjRtStreamExecutorBuffer> py_buffer,
       AllocateDestinationBuffer(compact_shape, device, local_device,
@@ -795,6 +822,7 @@ PjRtStreamExecutorClient::BufferFromHostBuffer(
   if (host_buffer_semantics == HostBufferSemantics::kImmutableOnlyDuringCall ||
       should_stage_host_to_device_transfers() ||
       !host_and_device_strides_equal) {
+    fout << "[h2d GPU pinned memory] " << std::endl; // ㅁㅜㅈㅗㄱㅓㄴ ㅇㅕㄱㅣ ㄷㅡㄹㅇㅓㅇㅗㅏ
     void* ptr = host_memory_allocator()->AllocateRaw(
         tsl::Allocator::kAllocatorAlignment, size);
     staging_buffer = std::shared_ptr<void>(
@@ -820,6 +848,9 @@ PjRtStreamExecutorClient::BufferFromHostBuffer(
   // duration of the call. Otherwise, we stage (if necessary) on a separate
   // thread.
   if (host_buffer_semantics == HostBufferSemantics::kImmutableOnlyDuringCall) {
+    
+    //no here
+    fout << "[Copy buffer into a stageing buffer] host_buffer_semantics" << std::endl;
     if (transpose) {
       transpose->Execute(data, staging_buffer.get());
     } else {
@@ -837,6 +868,7 @@ PjRtStreamExecutorClient::BufferFromHostBuffer(
   // usage holds have gone away.
   // TODO(misard) assess if it would be preferable to introduce a heuristic to
   // put the transfer into the calling thread for small literals.
+  fout << "transfer_h2d" << std::endl;
   auto transfer_h2d =
       [local_client = client(), transfer_manager, local_device, data, size,
        movable_device_buffer{device_buffer.ToClosure()}, shape,
@@ -906,8 +938,10 @@ PjRtStreamExecutorClient::BufferFromHostBuffer(
   } else {
     thread_pool()->Schedule(transfer_h2d);
   }
+  fout << "[END] BufferFromHostBuffer" << std::endl;
+  fout.close();
   return std::unique_ptr<PjRtBuffer>(std::move(py_buffer));
-}
+} // end BufferFromHostBuffer
 
 StatusOr<std::unique_ptr<PjRtBuffer>>
 PjRtStreamExecutorClient::CreateUninitializedBuffer(const Shape& shape,
@@ -919,6 +953,12 @@ StatusOr<std::unique_ptr<PjRtBuffer>>
 PjRtStreamExecutorClient::CreateUninitializedBuffer(
     const Shape& shape, PjRtDevice* device,
     std::shared_ptr<BufferSequencingEvent> definition_event) {
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "[TransferManager] CreateUninitializedBuffer " << std::endl;
+  fout.close();
+
   tsl::profiler::TraceMe traceme(
       "PjRtStreamExecutorClient::CreateUninitializedBuffer");
   VLOG(1) << "PjRtStreamExecutorClient::CreateUninitializedBuffer: shape: "
@@ -943,6 +983,10 @@ PjRtStreamExecutorClient::CreateUninitializedBuffer(
 StatusOr<std::unique_ptr<PjRtBuffer>>
 PjRtStreamExecutorClient::BufferFromHostLiteral(const LiteralSlice& literal,
                                                 PjRtDevice* device) {
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "[TransferManager] BufferFromHostLiteral " << std::endl;
   tsl::profiler::TraceMe traceme(
       "PjRtStreamExecutorClient::BufferFromHostLiteral");
   VLOG(1) << "PjRtStreamExecutorClient::BufferFromHostLiteral: shape: "
@@ -971,6 +1015,7 @@ PjRtStreamExecutorClient::BufferFromHostLiteral(const LiteralSlice& literal,
   // usage holds have gone away.
   // TODO(misard) assess if it would be preferable to introduce a heuristic to
   // put the transfer into the calling thread for small literals.
+  fout << "trasnfer_h2d" << std::endl;
   auto transfer_h2d = [local_client = client(), transfer_manager, local_device,
                        movable_device_buffer{device_buffer.ToClosure()},
                        literal, py_buffer{py_buffer.get()},
@@ -999,6 +1044,8 @@ PjRtStreamExecutorClient::BufferFromHostLiteral(const LiteralSlice& literal,
     QCHECK(h2d_stream->ok());
   };
   thread_pool()->Schedule(transfer_h2d);
+
+  fout.close();
   return std::unique_ptr<PjRtBuffer>(std::move(py_buffer));
 }
 
@@ -1317,6 +1364,11 @@ void PjRtStreamExecutorBuffer::DropHold(ScopedHold::Type type,
 
 PjRtFuture<Status> PjRtStreamExecutorBuffer::ToLiteral(
     MutableLiteralBase* literal) {
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "[TransfoerManager] PjRtStreamExecutorBuffer::ToLiteral " << std::endl;
+  fout.close();
   VLOG(1) << "PjRtStreamExecutorBuffer::ToLiteral";
   if (IsEmptyTuple()) {
     return PjRtFuture<Status>(
@@ -1482,6 +1534,10 @@ PjRtStreamExecutorBuffer::CopyToDeviceHelper(
 
 StatusOr<std::unique_ptr<PjRtBuffer>> PjRtStreamExecutorBuffer::CopyToDevice(
     PjRtDevice* dst_device) {
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "CopyTODevice " << std::endl;
   tsl::profiler::TraceMe traceme("PjRtStreamExecutorBuffer::CopyToDevice");
   VLOG(1) << "PjRtStreamExecutorBuffer::CopyToDevice";
   if (dst_device == device_) {
@@ -1553,7 +1609,7 @@ StatusOr<std::unique_ptr<PjRtBuffer>> PjRtStreamExecutorBuffer::CopyToDevice(
   RecordUsage(std::move(src_device_buffer), device_->local_device_state(),
               transfer_local_device, event, transfer_stream,
               /*prefer_to_retain_reference=*/true);
-
+  fout.close();
   return std::move(buffer);
 }
 
@@ -1699,6 +1755,12 @@ StatusOr<TupleHandle> MakeTupleHelper(
     absl::Span<PjRtBuffer* const> py_buffers,
     absl::Span<const PjRtStreamExecutorBuffer::ScopedHold> device_buffers,
     int device_ordinal) {
+  // [yg]
+  // not here
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << " [TransferManager] MakeTupleHelper " << std::endl;
+  fout.close();
   se::DeviceMemoryAllocator* allocator = client->allocator();
   TransferManager* transfer_manager =
       client->client()->backend().transfer_manager();
@@ -1793,19 +1855,30 @@ PjRtStreamExecutorExecutable::PjRtStreamExecutorExecutable(
       addressable_device_logical_ids_(
           std::move(addressable_device_logical_ids)),
       addressable_devices_(std::move(addressable_devices)) {
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  // Initial이 Execute() 호출할 떄마다 되는 듯..? 
+  fout << "[Init][TransferManager] PjRtStreamExecutorExecutable::PjRtStreamExecutorExecutable" << std::endl;
   TransferManager* transfer_manager =
       client_->client()->backend().transfer_manager();
   executables_.reserve(executables.size());
   for (auto& executable : executables) {
+    //fout << "executable.ToString(): " << executable->executable()->module().ToString() << std::endl; // Sharding attribute 있는데?
+    // Sharding. allgather도 있음.
     const auto& computation_layout =
         executable->executable()->module().entry_computation_layout();
     std::vector<Shape> parameter_shapes;
     parameter_shapes.reserve(computation_layout.parameter_count());
     for (int i = 0; i < computation_layout.parameter_count(); ++i) {
+      fout << "computation_layout.parameter_shape(i): " << computation_layout.parameter_shape(i).ToString() << std::endl; // with no tiling spec
+      // host shape과 device shpae이 똑같음.
+      //fout <<"transfer_manager->HostShapeToDeviceShape(): " << transfer_manager->HostShapeToDeviceShape(
+      //    computation_layout.parameter_shape(i)).ToString() << std::endl;
       parameter_shapes.push_back(transfer_manager->HostShapeToDeviceShape(
           computation_layout.parameter_shape(i)));
     }
     executables_.emplace_back(std::move(executable));
+    // save per executable
     on_device_executable_parameter_shapes_.push_back(
         std::move(parameter_shapes));
   }
@@ -1813,13 +1886,15 @@ PjRtStreamExecutorExecutable::PjRtStreamExecutorExecutable(
   int num_partitions;
   if (device_assignment_ == nullptr) {
     // This must go after `executables_` is initialized.
-    VLOG(3) << "PjRtStreamExecutorExecutable portable single-core";
+    //VLOG(3)
+    fout << "PjRtStreamExecutorExecutable portable single-core" << std::endl;
     num_partitions = 1;
     CHECK(addressable_devices_.empty());
-  } else {
+  } else { // here
     // This must go after `executables_` is initialized.
-    VLOG(3) << "PjRtStreamExecutorExecutable device_assignment:\n"
-            << device_assignment_->ToString();
+    //VLOG(3)
+    fout << "PjRtStreamExecutorExecutable device_assignment:\n"
+            << device_assignment_->ToString() << std::endl;
     CHECK_GE(addressable_devices_.size(), 1) << device_assignment_->ToString();
     CHECK_LE(addressable_devices_.size(), client_->addressable_device_count())
         << "Inconsistent local device count.";
@@ -1832,7 +1907,10 @@ PjRtStreamExecutorExecutable::PjRtStreamExecutorExecutable(
         << "Number of executables " << executables_.size()
         << " did not match number of partitions " << num_partitions;
   }
-}
+  fout  << "Number of executables " << executables_.size()
+        << " did not match number of partitions " << num_partitions << std::endl;
+  fout.close();
+} // PjRtStreamExecutorExecutable
 
 Status PjRtStreamExecutorExecutable::SetUpDonation(bool tuple_inputs) {
   parameters_that_must_be_donated_.reserve(executables_.size());
@@ -1879,6 +1957,8 @@ PjRtStreamExecutorExecutable::MakeExecutionInputsAndWaitForEvents(
   // not destroyed until after the loop below that waits on events.
   std::optional<TupleHandle> tuple_handle;
   if (parameter_is_tupled_arguments_ && !options.arguments_are_tupled) {
+    // not here
+    //fout << "if (parameter_is_tupled_arguments_ && !options.arguments_are_tupled) " << std::endl;
     TF_ASSIGN_OR_RETURN(
         tuple_handle,
         MakeTupleHelper(client_, device_state, options.strict_shape_checking,
@@ -1893,20 +1973,23 @@ PjRtStreamExecutorExecutable::MakeExecutionInputsAndWaitForEvents(
                              argument_handles.size());
     }
     execution_inputs.reserve(argument_handles.size());
+    fout << "[Devices] argument_handles.SIZE(): " << argument_handles.size() << std::endl; // num_args inputs (params, batch)
     for (int i = 0; i < argument_handles.size(); ++i) {
-      PjRtBuffer* handle = argument_handles[i];
+      PjRtBuffer* handle = argument_handles[i]; // d2dㄷㅗ PjRtBuffer.CopyToDeviceㅇㅔㅅㅓ
       fout << "handle->on_device_shape(): " << handle->on_device_shape() << std::endl;
       fout<< "PjRtBuffer* handle: " << handle << std::endl;
+      fout << "executable_parameter_shapes[i]: " << executable_parameter_shapes[i] << std::endl;
       // Make an ExecutionInput from the device buffer.
       TF_RETURN_IF_ERROR(CheckCompatibleShapes(
           options.strict_shape_checking, handle->on_device_shape(),
           executable_parameter_shapes[i], *transfer_manager, i));
-      execution_inputs.emplace_back(executable_parameter_shapes[i]);
+      execution_inputs.emplace_back(executable_parameter_shapes[i]); // save 용?
       ExecutionInput& execution_input = execution_inputs.back();
       ShapeTree<MaybeOwningDeviceMemory>::iterator input_iterator =
-          execution_input.MutableBuffers()->begin();
+          execution_input.MutableBuffers()->begin(); // ShapeTree Iterator();
       ShapeTree<MaybeOwningDeviceMemory>::iterator iterator_end =
           execution_input.MutableBuffers()->end();
+      //fout << "device_memory: " << device_buffers[i].device_memory()[0].size() << std::endl;
       device_buffers[i].AddToInput(&input_iterator, iterator_end,
                                    &execution_input, client_->allocator());
       CHECK(input_iterator == iterator_end);
@@ -1916,6 +1999,13 @@ PjRtStreamExecutorExecutable::MakeExecutionInputsAndWaitForEvents(
   for (BufferSequencingEvent* event : events) {
     event->WaitForEventOnStream(device_state->compute_stream());
   }
+  // if we wish to consume the value of the buffer on a different stream, we
+  // should first call WaitForEventOnStream(stream), which add a cross-stream
+  // from 'stream' to the buffer's definition event, causing 'stream' to pause
+  // until the definition event has been triggered, if needed. Operations on
+  // 'stream' may then assume that the buffer is valid and its contents correspond
+  // to the desired buffer.
+
   fout.close();
   return execution_inputs;
 }
@@ -2012,7 +2102,8 @@ StatusOr<ScopedShapedBuffer> PjRtStreamExecutorExecutable::EnqueueExecution(
     // are enqueueing.
     GetDeviceBufferEvents(*device_buffer, /*get_usage_events=*/must_donate,
                           &events);
-  }
+    // fout << "device_buffer.status().ToString(): " << device_buffer.ToString() << std::endl;
+  } // end for
 
   if (options.arguments_are_tupled) {
     if (!parameter_is_tupled_arguments_) {
@@ -2166,7 +2257,7 @@ PjRtStreamExecutorExecutable::ExecuteHelper(
     fout << "if (device == nullptr)" << std::endl;
     CHECK(device_assignment_ != nullptr);
     const int device_id = (*device_assignment_)(replica, partition);
-    fout << "device_id: " << std::to_string(device_id) << std::endl;
+    fout << "device_id: " << std::to_string(device_id) << std::endl; // physical_mesh의 (P, p)의 p에 극한되는 듯.
     fout << "PjRtStreamExecutorExecutable device_assignment:\n"
             << device_assignment_->ToString() << std::endl;
     // Computations: 1 Replicas: 1
@@ -2192,11 +2283,13 @@ PjRtStreamExecutorExecutable::ExecuteHelper(
           << " mapped to device ordinal for execution: " << device_ordinal;
 
   // SPMD sharding produces a single executable for multiple partitions.
-  int executable_idx = executables_.size() > 1 ? partition : 0;
+  fout << "executables_.size(): " << executables_.size() << std::endl;
+  int executable_idx = executables_.size() > 1 ? partition : 0; // 0
 
   std::vector<std::function<void()>> compute_callbacks;
   std::vector<PjRtStreamExecutorBuffer::ScopedHold> device_buffers;
   device_buffers.reserve(argument_handles.size());
+  fout << "[ExecuteHelper] argument_handles.size(): " << argument_handles.size() << std::endl;
   StatusOr<ScopedShapedBuffer> result_buffer_or_status = EnqueueExecution(
       argument_handles, replica, partition, executable_idx, run_id, options,
       device, &device_buffers, std::move(device_assignment), compute_callbacks);
@@ -2297,7 +2390,11 @@ PjRtStreamExecutorExecutable::Execute(
         argument_handles.size(), num_addressable_devices, num_replicas(),
         num_partitions());
   }
-
+  fout << InvalidArgument(
+        "Attempted to execute with %d argument lists when local device "
+        "count is %d (total replica count: %d, partition count: %d)",
+        argument_handles.size(), num_addressable_devices, num_replicas(),
+        num_partitions()) << std::endl;
   VLOG(1) << "Executing computation " << name()
           << "; num_replicas=" << num_replicas()
           << " num_partitions=" << num_partitions()
@@ -2329,13 +2426,18 @@ PjRtStreamExecutorExecutable::Execute(
       const LocalDeviceState& device_state =
           *tensorflow::down_cast<PjRtStreamExecutorDevice*>(device)
                ->local_device_state();
+      fout << "replica [HOST] " << std::to_string(replica) << std::endl;
+      fout << "partition [NUM_DEVICES] " << std::to_string(partition) << std::endl;
+      fout << "num_addressable_devices: " << std::to_string(num_addressable_devices) << std::endl;
+      fout << "[DEVICES] argument_handles[i].size(): " << argument_handles[i].size() << std::endl;
+      
+      // 확인 1. MeshHost가 replica가 맞는지?
+      // 확인 2. Device 끼리 argument_handles의 element가 동일한지?
+      // 확인 3. AllGather를 바로 구현할 수 있는지?
       device_state.execute_thread()->Schedule([&, replica, partition, i] {
         results[i] =
             ExecuteHelper(argument_handles[i], replica, partition, run_id,
                           options, returned_futures.has_value());
-      fout << "replica [HOST] " << std::to_string(replica) << std::endl;
-      fout << "partition [NUM_DEVICES] " << std::to_string(partition) << std::endl;
-      fout << "num_addressable_devices: " << std::to_string(num_addressable_devices) << std::endl;
         absl::MutexLock lock(&mu);
         --running;
         if (!results[i].ok()) {
@@ -2404,9 +2506,10 @@ PjRtStreamExecutorExecutable::Execute(
       returned_futures->push_back(*std::move(statusor->future));
     }
   }
+  fout << "Executing computation END" << std::endl;
   fout.close();
   return wrapped_results;
-}
+} // end of Execute
 
 StatusOr<std::vector<std::unique_ptr<PjRtBuffer>>>
 PjRtStreamExecutorExecutable::ExecuteSharded(
@@ -2545,6 +2648,11 @@ PjRtStreamExecutorClient::GetExecutableExtras(CompileOptions* options) {
 StatusOr<std::unique_ptr<PjRtLoadedExecutable>>
 PjRtStreamExecutorClient::Compile(const XlaComputation& computation,
                                   CompileOptions options) {
+  // [yg]
+  std::ofstream fout;
+  fout.open("/SSD/YG/alpa/ray/test.txt", std::ios_base::app); // append
+  fout << "[TransferManager] PjRtStreamExecutorClient::Compile " << std::endl;
+  fout.close();
   tsl::profiler::TraceMe traceme("PjRtStreamExecutorClient::Compile");
   VLOG(1) << "PjRtStreamExecutorClient::Compile";
 
